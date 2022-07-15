@@ -28,6 +28,7 @@ const float * math_value(struct math_context *, math_t id);
 float *math_init(struct math_context *, math_t id);
 math_t math_index(struct math_context *, math_t id, int index);
 int math_valid(struct math_context *, math_t id);
+int math_marked(struct math_context *M, math_t id);
 void math_print(struct math_context *, math_t id);	// for debug only
 
 static inline math_t

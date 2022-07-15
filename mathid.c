@@ -265,8 +265,26 @@ math_valid(struct math_context *M, math_t id) {
 	} else {
 		if (u.s.frame == 0)
 			return 1;
-		return (u.s.frame == 1);
+		return 1;
 	}
+}
+
+int
+math_marked(struct math_context *M, math_t id) {
+	union {
+		math_t id;
+		struct math_id s;
+	} u;
+	u.id = id;
+	if (u.s.transient || u.s.frame != 1) {
+		return 0;
+	}
+	int index = u.s.index;
+	int page_id = index / PAGE_SIZE;
+	index %= PAGE_SIZE;
+	if (page_id >= M->marked_page)
+		return 0;
+	return M->count[page_id]->count[index] > 0;
 }
 
 float *
@@ -289,6 +307,8 @@ math_index(struct math_context *M, math_t id, int index) {
 	if (u.s.type == MATH_TYPE_REF) {
 		u.s.size = index;
 		return u.id;
+	} else if (!u.s.transient) {
+		u.s.frame = 2 + index;
 	}
 	u.s.size = 0;
 	u.s.index += index;
@@ -464,7 +484,7 @@ math_mark(struct math_context *M, math_t id) {
 		struct math_id s;
 	} u;
 	u.id = id;
-	if (u.s.transient) {
+	if (u.s.transient || u.s.frame > 1) {
 		const float *v = math_value(M, id);
 		int size = math_size(M, id);
 		int type = math_type(M, id);
@@ -518,6 +538,7 @@ math_unmark(struct math_context *M, math_t id) {
 	assert(u.s.transient == 0);
 	if (u.s.frame == 0)
 		return;
+	assert (u.s.frame == 1);
 	int index = u.s.index;
 	int page_id = index / PAGE_SIZE;
 	index %= PAGE_SIZE;
@@ -638,6 +659,10 @@ math_frame(struct math_context *M) {
 
 void
 math_print(struct math_context *M, math_t id) {
+	if (!math_valid(M, id)) {
+		printf("[INVALID (%" PRIx64 "]\n", id.idx);
+		return;
+	}
 	const float * v = math_value(M, id);
 	int type = math_type(M, id);
 	int size = math_size(M, id);
@@ -670,11 +695,16 @@ math_print(struct math_context *M, math_t id) {
 	if (u.s.transient) {
 		printf(") :");
 	} else {
-		int index = u.s.index;
-		int page = index / PAGE_SIZE;
-		index %= PAGE_SIZE;
-		int c = M->count[page]->count[index];
-		printf("/%d) :", c);
+		if (u.s.frame > 1) {
+			int offset = u.s.frame - 2;
+			printf("<%d/?>) :", offset);
+		} else {
+			int index = u.s.index;
+			int page = index / PAGE_SIZE;
+			index %= PAGE_SIZE;
+			int c = M->count[page]->count[index];
+			printf("/%d) :", c);
+		}
 	}
 	if (size == 1 || u.s.type == MATH_TYPE_REF) {
 		int i;
@@ -712,7 +742,7 @@ main() {
 		{ 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16},
 		{ 15,14,13,12,11,10,9,8,7,6,5,4,3,2,1},
 	};
-	math_t p[7];
+	math_t p[8];
 	p[0] = math_vec4(M, v);
 	p[1] = math_import(M, NULL, MATH_TYPE_QUAT, 3);
 	float *buf = math_init(M, p[1]);
@@ -722,27 +752,33 @@ main() {
 	p[4] = math_index(M, p[3], 1);
 	p[5] = math_mark(M, p[0]);
 
-	int i;
-	for (i=0;i<6;i++) {
-		printf("%d:", i);
-		math_print(M, p[i]);
-	}
 	math_unmark(M, p[5]);
 	math_mark(M, p[5]);	// relive
 	p[6] = math_mark(M, p[3]);
-	math_print(M, p[6]);
+	p[7] = MATH_NULL;
 
-	for (i=0;i<7;i++) {
-		printf("%d : %s\n", i, math_valid(M, p[i]) ? "valid" : "invalid");
+	int i;
+	for (i=0;i<8;i++) {
+		printf("%d:", i);
+		math_print(M, p[i]);
+	}
+
+	for (i=0;i<8;i++) {
+		printf("%d : %s %s\n", i, math_valid(M, p[i]) ? "valid" : "invalid", math_marked(M, p[i]) ? "marked" : "");
 	}
 
 	math_frame(M);
 
-	for (i=0;i<7;i++) {
-		printf("%d : %s\n", i, math_valid(M, p[i]) ? "valid" : "invalid");
-	}
+	p[7] = math_index(M, p[6], 1);
+	p[7] = math_mark(M, p[7]);
 
 	math_unmark(M, p[5]);
+
+	for (i=0;i<8;i++) {
+		printf("%d : %s %s ", i, math_valid(M, p[i]) ? "valid" : "invalid", math_marked(M, p[i]) ? "marked" : "");
+		math_print(M, p[i]);
+	}
+
 	math_unmark(M, p[6]);
 
 	math_frame(M);
