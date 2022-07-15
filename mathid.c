@@ -283,7 +283,27 @@ math_index(struct math_context *M, math_t id, int index) {
 	return u.id;
 }
 
-float *
+static inline const float *
+get_identity(int type) {
+	static const float imat[16] = {
+		1,0,0,0,
+		0,1,0,0,
+		0,0,1,0,
+		0,0,0,1,
+	};
+	static const float ivec[4] = { 0, 0, 0, 1 };
+	switch (type) {
+	case MATH_TYPE_MAT:
+		return imat;
+	case MATH_TYPE_VEC4:
+	case MATH_TYPE_QUAT:
+		return ivec;
+	default:
+		return NULL;
+	}
+}
+
+const float *
 math_value(struct math_context *M, math_t id) {
 	union {
 		math_t id;
@@ -297,8 +317,23 @@ math_value(struct math_context *M, math_t id) {
 		}
 		return get_transient(M, u.s.index);
 	} else {
-		return get_marked(M, u.s.index);
+		if (u.s.frame) {
+			return get_marked(M, u.s.index);
+		} else {
+			return get_identity(u.s.type);
+		}
 	}
+}
+
+float *
+math_init(struct math_context *M, math_t id) {
+	union {
+		math_t id;
+		struct math_id s;
+	} u;
+	u.id = id;
+	assert (u.s.transient || u.s.frame == 1);
+	return (float *)math_value(M, id);
 }
 
 static struct marked_freelist *
@@ -404,7 +439,7 @@ get_marked_id(struct math_context *M, math_t id) {
 	assert (page_id < M->marked_page);
 	int count = M->count[page_id]->count[index];
 	if (count == 255) {
-		float *v = math_value(M, id);
+		const float *v = math_value(M, id);
 		int size = math_size(M, id);
 		return alloc_marked(M, v, u.s.type, size);
 	} else {
@@ -422,7 +457,7 @@ math_mark(struct math_context *M, math_t id) {
 	} u;
 	u.id = id;
 	if (u.s.transient) {
-		float *v = math_value(M, id);
+		const float *v = math_value(M, id);
 		int size = math_size(M, id);
 		int type = math_type(M, id);
 		return alloc_marked(M, v, type, size);
@@ -573,7 +608,7 @@ main() {
 	math_t p[7];
 	p[0] = math_vec4(M, v);
 	p[1] = math_import(M, NULL, MATH_TYPE_QUAT, 3);
-	float *buf = math_value(M, p[1]);
+	float *buf = math_init(M, p[1]);
 	memcpy(buf, &array[0][0], sizeof(array));
 	p[2] = math_index(M, p[1], 2);
 	p[3] = math_ref(M, &stack[0][0], MATH_TYPE_MAT, 2);
@@ -600,6 +635,12 @@ main() {
 	}
 
 	printf("mem : %d\n", (int)math_memsize(M));
+	printf("NULL : ");
+	math_print(M, math_identity(MATH_TYPE_NULL));
+	printf("IMAT : ");
+	math_print(M, math_identity(MATH_TYPE_MAT));
+	printf("IVEC : ");
+	math_print(M, math_identity(MATH_TYPE_VEC4));
 
 	math_delete(M);
 	return 0;
