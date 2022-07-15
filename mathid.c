@@ -6,6 +6,7 @@
 
 #define MAX_PAGE 256
 #define PAGE_SIZE 1024
+#define UNMARK_SIZE 1024
 
 struct page {
 	float v[PAGE_SIZE][4];
@@ -27,10 +28,18 @@ struct math_ref {
 	int type;
 };
 
+struct math_unmarked {
+	int n;
+	int cap;
+	int64_t *index;
+	int64_t tmp[UNMARK_SIZE];
+};
+
 struct math_context {
 	struct page * transient[MAX_PAGE];
 	struct page * marked[MAX_PAGE];
 	struct marked_count *count[MAX_PAGE];
+	struct math_unmarked unmarked;
 	struct marked_freelist *freelist;
 	int frame;
 	int n;
@@ -44,6 +53,28 @@ check_size(int size) {
 	return size > 0 && (size-1) <= s.size;
 }
 
+static void
+math_unmarked_init(struct math_unmarked *u) {
+	u->n = 0;
+	u->cap = UNMARK_SIZE;
+	u->index = u->tmp;
+}
+
+static void
+math_unmarked_deinit(struct math_unmarked *u) {
+	if (u->index != u->tmp) {
+		free(u->index);
+	}
+}
+
+static size_t
+math_unmarked_size(struct math_unmarked *u) {
+	if (u->index != u->tmp) {
+		return u->cap * sizeof(uint32_t);
+	}
+	return 0;
+}
+
 struct math_context *
 math_new() {
 	struct math_context * m = (struct math_context *)malloc(sizeof(*m));
@@ -54,6 +85,7 @@ math_new() {
 	m->marked[0] = NULL;
 	m->count[0] = NULL;
 	m->transient[0] = NULL;
+	math_unmarked_init(&m->unmarked);
 	return m;
 }
 
@@ -80,6 +112,7 @@ math_delete(struct math_context *M) {
 		}
 		free(M->count[i]);
 	}
+	math_unmarked_deinit(&M->unmarked);
 	free(M);
 }
 
@@ -105,6 +138,7 @@ math_memsize(struct math_context *M) {
 		}
 		sz += sizeof(struct marked_count);
 	}
+	sz += math_unmarked_size(&M->unmarked);
 	return sz;
 }
 
@@ -219,17 +253,6 @@ math_ref_type_(struct math_context *M, struct math_id id) {
 	return r->type;
 }
 
-static int
-check_marked(struct math_context *M, int index, int size) {
-	int page_id = index / PAGE_SIZE;
-	if (page_id >= M->marked_page)
-		return 0;
-	index %= PAGE_SIZE;
-	if (index + size > PAGE_SIZE)
-		return 0;
-	return M->count[page_id]->count[index] > 0;
-}
-
 int
 math_valid(struct math_context *M, math_t id) {
 	union {
@@ -242,18 +265,7 @@ math_valid(struct math_context *M, math_t id) {
 	} else {
 		if (u.s.frame == 0)
 			return 1;
-		if (u.s.frame != 1)
-			return 0;
-		// marked
-		switch (u.s.type) {
-		case MATH_TYPE_MAT:
-			return check_marked(M, u.s.index, 4 * (u.s.size + 1));
-		case MATH_TYPE_VEC4:
-		case MATH_TYPE_QUAT:
-			return check_marked(M, u.s.index, u.s.size + 1);
-		default:
-			return 0;
-		}
+		return (u.s.frame == 1);
 	}
 }
 
@@ -417,10 +429,6 @@ alloc_marked(struct math_context *M, const float *v, int type, int size) {
 	int page_id = index / PAGE_SIZE;
 	index %= PAGE_SIZE;
 	M->count[page_id]->count[index] = 1;
-	int i;
-	for (i=1;i<vecsize;i++) {
-		M->count[page_id]->count[index+i] = 255;
-	}
 
 	return u.id;
 }
@@ -469,6 +477,37 @@ math_mark(struct math_context *M, math_t id) {
 	return get_marked_id(M, id);
 }
 
+static inline int64_t
+math_unmark_handle_(struct math_id id) {
+	int size  = id.size + 1;
+	if (id.type == MATH_TYPE_MAT)
+		size *= 4;
+
+	return ((int64_t)id.index << 32) | size;
+}
+
+static inline int
+math_unmark_index_(int64_t handle, int *size) {
+	*size = handle & 0xffffffff;
+
+	return (int)(handle >> 32);
+}
+
+static void
+math_unmarked_insert(struct math_unmarked *u, struct math_id id) {
+	if (u->n >= u->cap) {
+		int newcap = u->cap * 3 / 2;
+		int64_t *newindex = (int64_t *)malloc(newcap * sizeof(int));
+		memcpy(newindex, u->index, u->n * sizeof(int64_t));
+		if (u->index != u->tmp) {
+			free(u->index);
+		}
+		u->index = newindex;
+		u->cap = newcap;
+	}
+	u->index[u->n++] = math_unmark_handle_(id);
+}
+
 void
 math_unmark(struct math_context *M, math_t id) {
 	union {
@@ -493,17 +532,84 @@ math_unmark(struct math_context *M, math_t id) {
 	assert(c > 0);
 	if (c == 1) {
 		// The last reference
-		struct marked_freelist * node = (struct marked_freelist *)math_value(M, id);
-		int i;
-		for (i=1;i<vecsize;i++) {
-			count[i] = 0;
-		}
-		node->next = M->freelist;
-		node->size = vecsize;
-		node->page = page_id;
-		M->freelist = node;
+		math_unmarked_insert(&M->unmarked, u.s);
 	}
 	*count = c - 1;
+}
+
+static int
+int64_compr(const void *a, const void *b) {
+	const int64_t * aa = (const int64_t *)a;
+	const int64_t * bb = (const int64_t *)b;
+	return (int)((*aa >> 32) - (*bb >> 32));
+}
+
+static int64_t *
+block_size(int64_t *ptr, int64_t *endptr, int *r_index, int *r_size) {
+	int size;
+	int index = math_unmark_index_(*ptr, &size);
+	*r_index = index;
+	*r_size = size;
+	for (;;) {
+		++ptr;
+		if (ptr >= endptr)
+			return ptr;
+		int next_size;
+		int next_index = math_unmark_index_(*ptr, &next_size);
+		if (index + size == next_index) {
+			// continuous block
+			*r_size += next_size;
+			size = next_size;
+			index = next_index;
+		} else {
+			return ptr;
+		}
+	}
+}
+
+static void
+free_unmarked(struct math_context *M) {
+	int n = M->unmarked.n;
+	if (n == 0)
+		return;
+	M->unmarked.n = 0;
+	qsort(M->unmarked.index, n, sizeof(int64_t), int64_compr);
+
+	// remove alive and dup index
+	int i;
+	int p = 0;
+	int sz;
+	int last = math_unmark_index_(M->unmarked.index[0], &sz);
+	int page_id = last / PAGE_SIZE;
+	if (M->count[page_id]->count[last % PAGE_SIZE] == 0) {
+		++p;
+	}
+	for (i=1;i<n;i++) {
+		int current = math_unmark_index_(M->unmarked.index[i], &sz);
+		if (current != last) {
+			last = current;
+			page_id = current / PAGE_SIZE;
+			if (M->count[page_id]->count[current % PAGE_SIZE] == 0) {
+				M->unmarked.index[p++] = M->unmarked.index[i];
+			}
+		}
+	}
+
+	if (p == 0)
+		return;
+
+	int64_t *ptr = M->unmarked.index;
+	int64_t *endptr = M->unmarked.index + p;
+	while (ptr < endptr) {
+		int index;
+		int sz;
+		ptr = block_size(ptr, endptr, &index, &sz);
+		struct marked_freelist * node = (struct marked_freelist *)get_marked(M, index);
+		node->next = M->freelist;
+		node->size = sz;
+		node->page = index / PAGE_SIZE;
+		M->freelist = node;
+	}
 }
 
 void
@@ -524,6 +630,7 @@ math_frame(struct math_context *M) {
 		free(M->transient[i]);
 		M->transient[i] = NULL;
 	}
+	free_unmarked(M);
 	M->n = 0;
 }
 
@@ -621,6 +728,7 @@ main() {
 		math_print(M, p[i]);
 	}
 	math_unmark(M, p[5]);
+	math_mark(M, p[5]);	// relive
 	p[6] = math_mark(M, p[3]);
 	math_print(M, p[6]);
 
@@ -633,6 +741,12 @@ main() {
 	for (i=0;i<7;i++) {
 		printf("%d : %s\n", i, math_valid(M, p[i]) ? "valid" : "invalid");
 	}
+
+	math_unmark(M, p[5]);
+	math_unmark(M, p[6]);
+
+	math_frame(M);
+
 
 	printf("mem : %d\n", (int)math_memsize(M));
 	printf("NULL : ");
