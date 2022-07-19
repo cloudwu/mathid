@@ -780,6 +780,15 @@ larray_index(lua_State *L) {
 }
 
 static int
+larray_size(lua_State *L) {
+	struct math_context *M = GETMC(L);
+	math_t v = get_id(L, M, 1);
+	int size = math_size(M, v);
+	lua_pushinteger(L, size);
+	return 1;
+}
+
+static int
 lindex(lua_State *L) {
 	struct math_context *M = GETMC(L);
 	const int num_indices = lua_gettop(L)-1;
@@ -2068,6 +2077,7 @@ init_math3d_api(lua_State *L, struct math3d_api *M) {
 		{ "vector", lvector },
 		{ "quaternion", lquaternion },
 		{ "array_index", larray_index },
+		{ "array_size", larray_size },
 		{ "index", lindex },
 		{ "set_index", lset_index},
 		{ "set_columns", lset_columns},
