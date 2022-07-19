@@ -655,6 +655,19 @@ math_frame(struct math_context *M) {
 	M->n = 0;
 }
 
+const char *
+math_typename(int t) {
+	static const char * type_names[] = {
+		"null",
+		"mat",
+		"v4",
+		"quat",
+	};
+	if (t < 0 || t >= sizeof(type_names)/sizeof(type_names[0]))
+		return "unknown";
+	return type_names[t];
+}
+
 #include <stdio.h>
 
 void

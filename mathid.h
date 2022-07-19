@@ -28,8 +28,19 @@ const float * math_value(struct math_context *, math_t id);
 float *math_init(struct math_context *, math_t id);
 math_t math_index(struct math_context *, math_t id, int index);
 int math_valid(struct math_context *, math_t id);
-int math_marked(struct math_context *M, math_t id);
+int math_marked(struct math_context *, math_t id);
 void math_print(struct math_context *, math_t id);	// for debug only
+const char * math_typename(int type);
+
+static inline int
+math_issame(math_t id1, math_t id2) {
+	return id1.idx == id2.idx;
+}
+
+static inline int
+math_isnull(math_t id) {
+	return id.idx == MATH_NULL.idx;
+}
 
 static inline math_t
 math_matrix(struct math_context *ctx, const float *v) {
@@ -44,19 +55,6 @@ math_vec4(struct math_context *ctx, const float *v) {
 static inline math_t
 math_quat(struct math_context *ctx, const float *v) {
 	return math_import(ctx, v, MATH_TYPE_QUAT, 1);
-}
-
-// For Lua lightuserdata
-static inline void *
-math_tohandle(math_t id) {
-	return (void *)id.idx;
-}
-
-static inline math_t
-math_fromhandle(void *h) {
-	math_t r;
-	r.idx = (uint64_t)h;
-	return r;
 }
 
 struct math_id {
@@ -76,6 +74,16 @@ math_identity(int type) {
 	u.id.idx = 0;
 	u.s.type = type;
 	return u.id;
+}
+
+static inline int
+math_isidentity(math_t id) {
+	union {
+		math_t id;
+		struct math_id s;
+	} u;
+	u.id = id;
+	return (!u.s.transient && u.s.frame == 0);
 }
 
 int math_ref_size_(struct math_context *, struct math_id id);
