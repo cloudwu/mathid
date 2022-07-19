@@ -985,7 +985,7 @@ math_t
 math3d_aabb_expand(struct math_context *M, math_t aabb, math_t e) {
 	math_t r = math_import(M, NULL, MATH_TYPE_VEC4, 2);
 	glm::vec4 &min = initvec4(M, math_index(M, r, 0));
-	glm::vec4 &max = initvec4(M, math_index(M, r, 0));
+	glm::vec4 &max = initvec4(M, math_index(M, r, 1));
 
 	const glm::vec4 &v = VEC(M, e);
 
