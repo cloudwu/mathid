@@ -443,8 +443,10 @@ alloc_marked(struct math_context *M, const float *v, int type, int size) {
 	u.s.type = type;
 	u.s.transient = 0;
 
-	float * ptr = get_marked(M, index);
-	memcpy(ptr, v, vecsize * 4 * sizeof(float));
+	if (v) {
+		float * ptr = get_marked(M, index);
+		memcpy(ptr, v, vecsize * 4 * sizeof(float));
+	}
 
 	int page_id = index / PAGE_SIZE;
 	index %= PAGE_SIZE;
@@ -556,6 +558,29 @@ math_unmark(struct math_context *M, math_t id) {
 		math_unmarked_insert(&M->unmarked, u.s);
 	}
 	*count = c - 1;
+}
+
+math_t
+math_premark(struct math_context *M, int type, int size) {
+	union {
+		math_t id;
+		struct math_id s;
+	} u;
+	u.id = alloc_marked(M, NULL, type, size);
+
+	int index = u.s.index;
+	int page_id = index / PAGE_SIZE;
+	index %= PAGE_SIZE;
+	assert(page_id < M->marked_page);
+
+	int vecsize = u.s.size + 1;
+	if (u.s.type == MATH_TYPE_MAT) {
+		vecsize *= 4;
+	}
+	assert(vecsize + index <= PAGE_SIZE);
+	M->count[page_id]->count[index] = 0;
+	math_unmarked_insert(&M->unmarked, u.s);
+	return u.id;
 }
 
 static int
@@ -804,6 +829,19 @@ main() {
 	math_print(M, math_identity(MATH_TYPE_MAT));
 	printf("IVEC : ");
 	math_print(M, math_identity(MATH_TYPE_VEC4));
+
+	math_t id = math_premark(M, MATH_TYPE_VEC4, 1);
+	float * t = math_init(M, id);
+	t[0] = 42;
+	t[1] = 0;
+	t[2] = 0;
+	t[3] = 0;
+
+	math_mark(M, id);
+
+	math_frame(M);
+
+	math_print(M, id);
 
 	math_delete(M);
 	return 0;
